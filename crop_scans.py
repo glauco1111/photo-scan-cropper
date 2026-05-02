@@ -68,12 +68,14 @@ def detect_margins(
     return left, top, right, bottom
 
 
-def detect_white_bars(img_array, mean_thresh=230, std_thresh=20, max_scan=500):
+def detect_white_bars(img_array, mean_thresh=230, std_thresh=20,
+                      content_mean=210, content_std=35, max_scan=500):
     """
     Detect uniform white/near-white bars on all four sides (printed photo-paper borders).
-    Scans inward, waits for a white region (high mean + low std), then returns the index
-    where real content begins. Returns 0 for sides with no white bar.
-    max_scan is larger than the scanner-gradient scan because these bars can be 100-200px wide.
+    Scans inward, finds the white region (high mean + low std), then waits for clearly
+    photo content (mean < content_mean OR std > content_std) before returning the cut point.
+    The two-threshold approach skips the gradual white→content transition zone so the crop
+    lands on real pixel content, not a residual white gradient.
     """
     gray = img_array.mean(axis=2)
     h, w = gray.shape
@@ -82,11 +84,13 @@ def detect_white_bars(img_array, mean_thresh=230, std_thresh=20, max_scan=500):
     def find_content_after_white(strips):
         found_white = False
         for i, strip in enumerate(strips):
-            is_white = strip.mean() > mean_thresh and strip.std() < std_thresh
+            m, s = strip.mean(), strip.std()
+            is_white   = m > mean_thresh and s < std_thresh
+            is_content = m < content_mean or s > content_std
             if is_white:
                 found_white = True
-            elif found_white:
-                return i  # first content column after the white bar
+            elif found_white and is_content:
+                return i  # clearly photo content after the white bar
         return 0  # no white-to-content transition found
 
     left   = find_content_after_white([gray[:, x]     for x in range(n)])
