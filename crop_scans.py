@@ -68,6 +68,35 @@ def detect_margins(
     return left, top, right, bottom
 
 
+def detect_white_bars(img_array, mean_thresh=230, std_thresh=20, max_scan=500):
+    """
+    Detect uniform white/near-white bars on all four sides (printed photo-paper borders).
+    Scans inward, waits for a white region (high mean + low std), then returns the index
+    where real content begins. Returns 0 for sides with no white bar.
+    max_scan is larger than the scanner-gradient scan because these bars can be 100-200px wide.
+    """
+    gray = img_array.mean(axis=2)
+    h, w = gray.shape
+    n = min(max_scan, w // 3, h // 3)
+
+    def find_content_after_white(strips):
+        found_white = False
+        for i, strip in enumerate(strips):
+            is_white = strip.mean() > mean_thresh and strip.std() < std_thresh
+            if is_white:
+                found_white = True
+            elif found_white:
+                return i  # first content column after the white bar
+        return 0  # no white-to-content transition found
+
+    left   = find_content_after_white([gray[:, x]     for x in range(n)])
+    right  = find_content_after_white([gray[:, w-1-x] for x in range(n)])
+    top    = find_content_after_white([gray[y, :]      for y in range(n)])
+    bottom = find_content_after_white([gray[h-1-y, :]  for y in range(n)])
+
+    return left, top, right, bottom
+
+
 def safe_crop(left, top, right, bottom, w, h, max_fraction=0.20):
     """Clamp margins so we never remove more than max_fraction of each dimension."""
     left   = min(left,   int(w * max_fraction))
@@ -115,12 +144,32 @@ def process_folder(input_dir, output_dir, args):
             right  = args.fixed_right  if args.fixed_right  is not None else auto_r
             bottom = args.fixed_bottom if args.fixed_bottom is not None else auto_b
 
+            # Second pass: detect uniform white bars (printed photo-paper borders).
+            # Only applies when BOTH opposing sides are detected — real print borders are
+            # symmetric; a single-side detection is a false positive (e.g. white clothing).
+            wb_l = wb_t = wb_r = wb_b = 0
+            if not args.no_strip_white:
+                wb_l, wb_t, wb_r, wb_b = detect_white_bars(img_array)
+                if wb_l and wb_r:
+                    left  = max(left,  wb_l)
+                    right = max(right, wb_r)
+                else:
+                    wb_l = wb_r = 0
+                if wb_t and wb_b:
+                    top    = max(top,    wb_t)
+                    bottom = max(bottom, wb_b)
+                else:
+                    wb_t = wb_b = 0
+
             left, top, right, bottom = safe_crop(left, top, right, bottom, w, h)
 
             new_w = w - left - right
             new_h = h - top - bottom
             print(f"  Original : {w} x {h}")
-            print(f"  Margins  : L={left}  T={top}  R={right}  B={bottom}")
+            print(f"  Margins  : L={left}  T={top}  R={right}  B={bottom}", end="")
+            if wb_l or wb_t or wb_r or wb_b:
+                print(f"  (white bars: L+{wb_l} T+{wb_t} R+{wb_r} B+{wb_b})", end="")
+            print()
             print(f"  Result   : {new_w} x {new_h}")
 
             if args.preview:
@@ -167,6 +216,9 @@ def main():
     parser.add_argument("--margin-bottom", type=int, default=35, metavar="PX",
                         help="Safety pixels for bottom — larger because scanner/print border "
                              "is typically wider at the bottom (default: 35)")
+
+    parser.add_argument("--no-strip-white", action="store_true",
+                        help="Disable automatic removal of uniform white photo-paper borders")
 
     parser.add_argument("--fixed-left",   type=int, default=None, metavar="PX",
                         help="Override: use this fixed pixel margin on the left")
